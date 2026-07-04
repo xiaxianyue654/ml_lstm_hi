@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -21,7 +22,7 @@ from .config import (
 )
 from .data_loader import load_train_test_data
 from .feature_engineering import inverse_transform_target, load_feature_artifacts, transform_features
-from .sequence_generator import create_test_sequences
+from .sequence_generator import create_inference_sequence
 
 
 logger = logging.getLogger(__name__)
@@ -62,14 +63,7 @@ def load_trained_model() -> tf.keras.Model:
         return model
 
     if H5_MODEL_PATH.exists():
-        model = tf.keras.models.load_model(
-            H5_MODEL_PATH,
-            custom_objects={
-                "mse": tf.keras.losses.MeanSquaredError(),
-                "mae": tf.keras.metrics.MeanAbsoluteError(),
-            },
-            compile=False,
-        )
+        model = tf.keras.models.load_model(H5_MODEL_PATH, compile=False)
         logger.info("Loaded legacy H5 model from %s", H5_MODEL_PATH)
         return model
 
@@ -86,24 +80,36 @@ def generate_submission() -> pd.DataFrame:
     train_df, test_df = load_train_test_data()
     artifacts = load_feature_artifacts(PREPROCESSOR_PATH)
 
-    train_features, _ = transform_features(train_df, artifacts)
-    test_features, _ = transform_features(test_df, artifacts)
-
-    x_test = create_test_sequences(
-        history_features=train_features,
-        future_features=test_features,
-        lookback=LOOKBACK,
-    )
-    logger.info("Prediction input shape: %s", x_test.shape)
-
     model = load_trained_model()
-    pred_scaled = model.predict(x_test, verbose=0).reshape(-1)
-    predictions = inverse_transform_target(pred_scaled, artifacts)
-    predictions = np.clip(predictions, 0.0, None)
+    train_features, train_target = transform_features(train_df, artifacts)
+    test_features, _ = transform_features(test_df, artifacts)
+    if train_target is None:
+        raise ValueError("Training target history is required for autoregressive prediction.")
+
+    feature_history = train_features.copy()
+    target_history = train_target.astype(np.float32).tolist()
+    predictions: list[float] = []
+
+    for row_idx in range(len(test_features)):
+        x_input = create_inference_sequence(
+            feature_history=feature_history,
+            target_history=np.asarray(target_history, dtype=np.float32),
+            lookback=LOOKBACK,
+        )
+        pred_scaled = model.predict(x_input, verbose=0).reshape(-1)
+        pred_scaled_value = float(pred_scaled[0])
+        pred_value = float(inverse_transform_target(np.asarray([pred_scaled_value], dtype=np.float32), artifacts)[0])
+        pred_value = max(0.0, pred_value)
+        predictions.append(pred_value)
+
+        feature_history = pd.concat([feature_history, test_features.iloc[[row_idx]]], ignore_index=True)
+        target_history.append(pred_scaled_value)
+
+    logger.info("Prediction steps completed: %d", len(predictions))
 
     submission = pd.DataFrame({"ID": test_df["ID"].to_numpy(), "cnt": predictions})
     submission.to_csv(SUBMISSION_PATH, index=False)
     logger.info("Saved submission to %s", SUBMISSION_PATH)
 
-    _plot_predictions(train_df, test_df, predictions)
+    _plot_predictions(train_df, test_df, np.asarray(predictions, dtype=np.float32))
     return submission

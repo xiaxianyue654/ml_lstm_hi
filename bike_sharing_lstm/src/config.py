@@ -15,22 +15,31 @@ MODEL_PATH = MODELS_DIR / "lstm_model.keras"
 H5_MODEL_PATH = MODELS_DIR / "lstm_model.h5"
 PREPROCESSOR_PATH = MODELS_DIR / "preprocessor.pkl"
 HISTORY_PATH = LOGS_DIR / "training_history.csv"
+FINAL_HISTORY_PATH = LOGS_DIR / "final_training_history.csv"
+BASELINE_METRICS_PATH = LOGS_DIR / "baseline_metrics.csv"
 TRAINING_PLOT_PATH = LOGS_DIR / "training_curve.png"
 PREDICTION_PLOT_PATH = OUTPUT_DIR / "prediction_visualization.png"
 SUBMISSION_PATH = OUTPUT_DIR / "submission.csv"
 
-LOOKBACK = 24
+LOOKBACK = 48
 BATCH_SIZE = 64
 EPOCHS = 100
 LSTM_UNITS = [64, 32]
-DENSE_UNITS = 16
+DENSE_UNITS = 8
 DROPOUT = 0.2
-LEARNING_RATE = 0.001
+LEARNING_RATE = 5e-4
 PATIENCE = 8
+EARLY_STOP_MIN_DELTA = 0.001
+LR_REDUCE_PATIENCE = 3
+WEIGHT_DECAY = 1e-6
 TRAIN_RATIO = 0.8
 RANDOM_SEED = 42
 PREDICTION_PLOT_TAIL = 24 * 7
-
+VALIDATION_MODE = "walk_forward"
+N_SPLITS = 3
+USE_TIME_DECAY = False
+DECAY_RATE = 0.999
+NORMALIZE_TIME_WEIGHTS = True
 
 
 def ensure_project_dirs() -> None:
