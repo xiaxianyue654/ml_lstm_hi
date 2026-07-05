@@ -18,7 +18,18 @@ logger = logging.getLogger(__name__)
 
 CONTINUOUS_COLUMNS = ["temp", "atemp", "hum", "windspeed", "temp_hum", "temp_windspeed"]
 CATEGORICAL_COLUMNS = ["season", "weathersit", "part_of_day"]
-PASSTHROUGH_COLUMNS = ["yr", "holiday", "workingday", "is_weekend", "is_rush_hour", "rush_working"]
+PASSTHROUGH_COLUMNS = [
+    "yr",
+    "holiday",
+    "workingday",
+    "is_weekend",
+    "is_rush_hour",
+    "daytime_flag",
+    "rush_working",
+    "bad_weather_flag",
+    "rush_bad_weather",
+    "weekend_daytime",
+]
 CYCLIC_COLUMNS = ["hr_sin", "hr_cos", "weekday_sin", "weekday_cos", "mnth_sin", "mnth_cos"]
 
 
@@ -66,6 +77,7 @@ def add_time_context_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         [0, 1, 2],
         default=3,
     ).astype(np.int8)
+    frame["daytime_flag"] = frame["part_of_day"].isin([1, 2]).astype(np.int8)
     return frame
 
 
@@ -75,6 +87,9 @@ def add_interaction_features(dataframe: pd.DataFrame) -> pd.DataFrame:
     frame["temp_hum"] = frame["temp"] * frame["hum"]
     frame["temp_windspeed"] = frame["temp"] * frame["windspeed"]
     frame["rush_working"] = (frame["is_rush_hour"] * frame["workingday"]).astype(np.int8)
+    frame["bad_weather_flag"] = (frame["weathersit"] >= 3).astype(np.int8)
+    frame["rush_bad_weather"] = (frame["is_rush_hour"] * frame["bad_weather_flag"]).astype(np.int8)
+    frame["weekend_daytime"] = (frame["is_weekend"] * frame["daytime_flag"]).astype(np.int8)
     return frame
 
 
