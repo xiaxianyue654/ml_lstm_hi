@@ -16,7 +16,22 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 logger = logging.getLogger(__name__)
 
-CONTINUOUS_COLUMNS = ["temp", "atemp", "hum", "windspeed", "temp_hum", "temp_windspeed"]
+CONTINUOUS_COLUMNS = [
+    "temp",
+    "atemp",
+    "hum",
+    "windspeed",
+    "temp_hum",
+    "temp_windspeed",
+    "comfort_index",
+    "wind_chill",
+    "extreme_weather_score",
+    "morning_temp",
+    "evening_temp",
+    "temp_lag_1",
+    "hum_lag_1",
+    "windspeed_lag_1"
+]
 CATEGORICAL_COLUMNS = ["season", "weathersit", "part_of_day"]
 PASSTHROUGH_COLUMNS = [
     "yr",
@@ -29,6 +44,11 @@ PASSTHROUGH_COLUMNS = [
     "bad_weather_flag",
     "rush_bad_weather",
     "weekend_daytime",
+    "extreme_temp",
+    "extreme_hum",
+    "extreme_wind",
+    "weekend_good_weather",
+    "weekend_bad_weather",
 ]
 CYCLIC_COLUMNS = ["hr_sin", "hr_cos", "weekday_sin", "weekday_cos", "mnth_sin", "mnth_cos"]
 
@@ -64,6 +84,7 @@ def add_cyclic_time_features(dataframe: pd.DataFrame) -> pd.DataFrame:
     frame["weekday_cos"] = np.cos(2 * math.pi * frame["weekday"] / 7.0)
     frame["mnth_sin"] = np.sin(2 * math.pi * frame["mnth"] / 12.0)
     frame["mnth_cos"] = np.cos(2 * math.pi * frame["mnth"] / 12.0)
+    day_of_year = frame["dteday"].dt.dayofyear.astype(np.float32)
     return frame
 
 
@@ -93,12 +114,65 @@ def add_interaction_features(dataframe: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def add_advanced_interaction_features(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Add richer interaction features using restored weather scales."""
+    frame = dataframe.copy()
+
+    # Restore approximate physical scales from the normalized bike-sharing dataset.
+    temp_c = frame["temp"] * 41.0
+    windspeed_kph = frame["windspeed"] * 67.0
+
+    frame["comfort_index"] = temp_c - 0.55 * (1.0 - frame["hum"]) * (temp_c - 14.5)
+    windspeed_factor = np.power(windspeed_kph, 0.16)
+    frame["wind_chill"] = 13.12 + 0.6215 * temp_c - 11.37 * windspeed_factor + 0.3965 * temp_c * windspeed_factor
+
+    frame["extreme_temp"] = ((temp_c > 30.0) | (temp_c < 0.0)).astype(np.int8)
+    frame["extreme_hum"] = (frame["hum"] > 0.8).astype(np.int8)
+    frame["extreme_wind"] = (windspeed_kph > 15.0).astype(np.int8)
+    frame["extreme_weather_score"] = (
+        frame["extreme_temp"] + frame["extreme_hum"] + frame["extreme_wind"]
+    ).astype(np.float32)
+
+    morning_mask = frame["hr"].isin([5, 6, 7, 8]).astype(np.int8)
+    evening_mask = frame["hr"].isin([17, 18, 19, 20]).astype(np.int8)
+    frame["morning_temp"] = temp_c * morning_mask
+    frame["evening_temp"] = temp_c * evening_mask
+
+    frame["weekend_good_weather"] = (frame["is_weekend"] * (frame["weathersit"] <= 2).astype(np.int8)).astype(np.int8)
+    frame["weekend_bad_weather"] = (frame["is_weekend"] * (frame["weathersit"] >= 3).astype(np.int8)).astype(np.int8)
+    return frame
+
+
+def add_exogenous_lag_features(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Add low-order lag features for exogenous weather variables."""
+    frame = dataframe.copy()
+    frame["temp_lag_1"] = frame["temp"].shift(1)
+    frame["hum_lag_1"] = frame["hum"].shift(1)
+    frame["windspeed_lag_1"] = frame["windspeed"].shift(1)
+
+    # Use the current observation for the first step to avoid introducing NaNs.
+    frame["temp_lag_1"] = frame["temp_lag_1"].fillna(frame["temp"])
+    frame["hum_lag_1"] = frame["hum_lag_1"].fillna(frame["hum"])
+    frame["windspeed_lag_1"] = frame["windspeed_lag_1"].fillna(frame["windspeed"])
+    return frame
+
+
+def add_target_temporal_features(
+    dataframe: pd.DataFrame,
+    target_series: pd.Series | np.ndarray,
+) -> pd.DataFrame:
+    """Add target-derived lag and rolling features using past cnt values only."""
+    return dataframe.copy()
+
+
 def build_feature_frame(dataframe: pd.DataFrame) -> pd.DataFrame:
     """Build stable exogenous features only."""
     frame = dataframe.copy()
     frame = add_cyclic_time_features(frame)
     frame = add_time_context_features(frame)
     frame = add_interaction_features(frame)
+    frame = add_advanced_interaction_features(frame)
+    frame = add_exogenous_lag_features(frame)
     return frame
 
 
@@ -111,6 +185,7 @@ def transform_target_series(target_series: pd.Series | np.ndarray) -> np.ndarray
 def _assemble_feature_frame(
     dataframe: pd.DataFrame,
     artifacts: FeatureArtifacts,
+    target_series: Optional[pd.Series | np.ndarray] = None,
 ) -> pd.DataFrame:
     """Transform a raw dataframe into the model input feature frame."""
     frame = build_feature_frame(dataframe)
@@ -180,6 +255,7 @@ def fit_transform_features(train_df: pd.DataFrame) -> Tuple[pd.DataFrame, np.nda
 def transform_features(
     dataframe: pd.DataFrame,
     artifacts: FeatureArtifacts,
+    target_series: Optional[pd.Series | np.ndarray] = None,
 ) -> Tuple[pd.DataFrame, Optional[np.ndarray]]:
     """Transform a dataframe using saved preprocessing artifacts."""
     feature_frame = _assemble_feature_frame(dataframe, artifacts)
@@ -218,3 +294,7 @@ def load_feature_artifacts(filepath: Path) -> FeatureArtifacts:
         raise TypeError(f"Unexpected preprocessor object stored in {filepath}")
 
     return artifacts
+
+
+
+

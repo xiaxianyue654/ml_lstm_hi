@@ -338,7 +338,7 @@ def _evaluate_recursive_fold(
     target_history = train_target.astype(np.float32).tolist()
     pred_scaled_values: list[float] = []
 
-    for row_idx in range(len(val_features)):
+    for row_idx in range(len(val_raw)):
         x_input = create_inference_sequence(
             feature_history=feature_history,
             target_history=np.asarray(target_history, dtype=np.float32),
@@ -347,7 +347,6 @@ def _evaluate_recursive_fold(
         pred_scaled = model.predict(x_input, verbose=0).reshape(-1)
         pred_scaled_value = float(pred_scaled[0])
         pred_scaled_values.append(pred_scaled_value)
-
         feature_history = pd.concat([feature_history, val_features.iloc[[row_idx]]], ignore_index=True)
         target_history.append(pred_scaled_value)
 
