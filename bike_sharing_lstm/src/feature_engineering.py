@@ -16,9 +16,9 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 logger = logging.getLogger(__name__)
 
-CONTINUOUS_COLUMNS = ["temp", "atemp", "hum", "windspeed"]
+CONTINUOUS_COLUMNS = ["temp", "atemp", "hum", "windspeed", "temp_hum", "temp_windspeed"]
 CATEGORICAL_COLUMNS = ["season", "weathersit", "part_of_day"]
-PASSTHROUGH_COLUMNS = ["yr", "holiday", "workingday", "is_weekend", "is_rush_hour"]
+PASSTHROUGH_COLUMNS = ["yr", "holiday", "workingday", "is_weekend", "is_rush_hour", "rush_working"]
 CYCLIC_COLUMNS = ["hr_sin", "hr_cos", "weekday_sin", "weekday_cos", "mnth_sin", "mnth_cos"]
 
 
@@ -69,12 +69,28 @@ def add_time_context_features(dataframe: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def add_interaction_features(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Add low-risk interaction features that preserve the current LSTM pipeline."""
+    frame = dataframe.copy()
+    frame["temp_hum"] = frame["temp"] * frame["hum"]
+    frame["temp_windspeed"] = frame["temp"] * frame["windspeed"]
+    frame["rush_working"] = (frame["is_rush_hour"] * frame["workingday"]).astype(np.int8)
+    return frame
+
+
 def build_feature_frame(dataframe: pd.DataFrame) -> pd.DataFrame:
     """Build stable exogenous features only."""
     frame = dataframe.copy()
     frame = add_cyclic_time_features(frame)
     frame = add_time_context_features(frame)
+    frame = add_interaction_features(frame)
     return frame
+
+
+def transform_target_series(target_series: pd.Series | np.ndarray) -> np.ndarray:
+    """Apply the log-domain target transform before scaling."""
+    target_array = np.asarray(target_series, dtype=np.float32).reshape(-1, 1)
+    return np.log1p(target_array)
 
 
 def _assemble_feature_frame(
@@ -116,7 +132,8 @@ def fit_transform_features(train_df: pd.DataFrame) -> Tuple[pd.DataFrame, np.nda
     category_feature_names = list(category_encoder.get_feature_names_out(CATEGORICAL_COLUMNS))
 
     target_scaler = StandardScaler()
-    target_array = target_scaler.fit_transform(train_df[["cnt"]]).astype(np.float32).ravel()
+    target_log = transform_target_series(train_df["cnt"])
+    target_array = target_scaler.fit_transform(target_log).astype(np.float32).ravel()
 
     train_passthrough = train_frame[PASSTHROUGH_COLUMNS + CYCLIC_COLUMNS].astype(np.float32).reset_index(drop=True)
     train_continuous_df = pd.DataFrame(train_continuous, columns=CONTINUOUS_COLUMNS)
@@ -140,6 +157,7 @@ def fit_transform_features(train_df: pd.DataFrame) -> Tuple[pd.DataFrame, np.nda
     logger.info("Contains rolling features: %s", any("roll" in column for column in train_features.columns))
     logger.info("Contains time context: %s", any("weekend" in column for column in train_features.columns))
     logger.info("Contains interaction: %s", any("temp_hum" in column for column in train_features.columns))
+    logger.info("Target transform: log1p(cnt) + StandardScaler")
 
     return train_features.astype(np.float32), target_array, artifacts
 
@@ -153,14 +171,17 @@ def transform_features(
     target_array: Optional[np.ndarray] = None
 
     if "cnt" in dataframe.columns:
-        target_array = artifacts.target_scaler.transform(dataframe[["cnt"]]).astype(np.float32).ravel()
+        target_log = transform_target_series(dataframe["cnt"])
+        target_array = artifacts.target_scaler.transform(target_log).astype(np.float32).ravel()
 
     return feature_frame, target_array
 
 
 def inverse_transform_target(values: np.ndarray, artifacts: FeatureArtifacts) -> np.ndarray:
-    """Convert standardized predictions back to the original cnt scale."""
-    return artifacts.target_scaler.inverse_transform(values.reshape(-1, 1)).ravel()
+    """Convert scaled log-domain predictions back to the original cnt scale."""
+    log_values = artifacts.target_scaler.inverse_transform(values.reshape(-1, 1))
+    restored = np.expm1(log_values)
+    return np.clip(restored, 0.0, None).ravel()
 
 
 def save_feature_artifacts(artifacts: FeatureArtifacts, filepath: Path) -> None:

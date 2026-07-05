@@ -39,7 +39,7 @@ from .feature_engineering import (
     transform_features,
 )
 from .model import build_lstm_model
-from .sequence_generator import create_sequences
+from .sequence_generator import create_inference_sequence, create_sequences
 
 
 logger = logging.getLogger(__name__)
@@ -300,7 +300,62 @@ def _train_single_fold(
         float(best_row["val_rmse"]),
         float(best_row["val_mae"]),
     )
+    recursive_val_rmse, recursive_val_mae = _evaluate_recursive_fold(
+        model=model,
+        train_features=train_features,
+        train_target=train_target,
+        val_raw=val_raw,
+        artifacts=artifacts,
+    )
+    summary["recursive_val_rmse"] = recursive_val_rmse
+    summary["recursive_val_mae"] = recursive_val_mae
+    history_df["recursive_val_rmse"] = recursive_val_rmse
+    history_df["recursive_val_mae"] = recursive_val_mae
+
+    logger.info(
+        "Fold %d recursive validation | rmse=%.4f | mae=%.4f | rmse_gap=%.4f",
+        fold_id,
+        recursive_val_rmse,
+        recursive_val_mae,
+        recursive_val_rmse - float(best_row["val_rmse"]),
+    )
     return history_df, summary
+
+
+def _evaluate_recursive_fold(
+    model: tf.keras.Model,
+    train_features: pd.DataFrame,
+    train_target: np.ndarray,
+    val_raw: pd.DataFrame,
+    artifacts,
+) -> tuple[float, float]:
+    """Run recursive validation over an entire fold to match deployment behavior."""
+    val_features, val_target = transform_features(val_raw, artifacts)
+    if val_target is None:
+        raise ValueError("Validation target array is required for recursive evaluation.")
+
+    feature_history = train_features.copy()
+    target_history = train_target.astype(np.float32).tolist()
+    pred_scaled_values: list[float] = []
+
+    for row_idx in range(len(val_features)):
+        x_input = create_inference_sequence(
+            feature_history=feature_history,
+            target_history=np.asarray(target_history, dtype=np.float32),
+            lookback=LOOKBACK,
+        )
+        pred_scaled = model.predict(x_input, verbose=0).reshape(-1)
+        pred_scaled_value = float(pred_scaled[0])
+        pred_scaled_values.append(pred_scaled_value)
+
+        feature_history = pd.concat([feature_history, val_features.iloc[[row_idx]]], ignore_index=True)
+        target_history.append(pred_scaled_value)
+
+    y_true = inverse_transform_target(val_target, artifacts)
+    y_pred = inverse_transform_target(np.asarray(pred_scaled_values, dtype=np.float32), artifacts)
+    rmse = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+    mae = float(np.mean(np.abs(y_pred - y_true)))
+    return rmse, mae
 
 
 def _train_final_model(train_df: pd.DataFrame, final_epochs: int) -> dict[str, float]:
@@ -383,13 +438,20 @@ def train_model() -> Dict[str, float]:
 
     avg_val_rmse = float(np.mean([summary["best_val_rmse"] for summary in fold_summaries]))
     avg_val_mae = float(np.mean([summary["best_val_mae"] for summary in fold_summaries]))
+    avg_recursive_val_rmse = float(np.mean([summary["recursive_val_rmse"] for summary in fold_summaries]))
+    avg_recursive_val_mae = float(np.mean([summary["recursive_val_mae"] for summary in fold_summaries]))
     avg_best_epoch = float(np.mean([summary["best_epoch"] for summary in fold_summaries]))
     final_epochs = max(5, int(round(avg_best_epoch)))
 
     logger.info(
-        "Walk-forward summary | avg_val_rmse=%.4f | avg_val_mae=%.4f | avg_best_epoch=%.2f",
+        (
+            "Walk-forward summary | avg_val_rmse=%.4f | avg_val_mae=%.4f | "
+            "avg_recursive_val_rmse=%.4f | avg_recursive_val_mae=%.4f | avg_best_epoch=%.2f"
+        ),
         avg_val_rmse,
         avg_val_mae,
+        avg_recursive_val_rmse,
+        avg_recursive_val_mae,
         avg_best_epoch,
     )
 
@@ -398,6 +460,8 @@ def train_model() -> Dict[str, float]:
     return {
         "avg_val_rmse": avg_val_rmse,
         "avg_val_mae": avg_val_mae,
+        "avg_recursive_val_rmse": avg_recursive_val_rmse,
+        "avg_recursive_val_mae": avg_recursive_val_mae,
         "avg_best_epoch": avg_best_epoch,
         "final_epochs": final_train_metrics["final_epochs"],
         "final_train_rmse": final_train_metrics["train_rmse"],

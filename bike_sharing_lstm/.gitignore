@@ -22,3 +22,6 @@ Thumbs.db
 
 # Environment variables
 .env
+
+# test
+**/test/
